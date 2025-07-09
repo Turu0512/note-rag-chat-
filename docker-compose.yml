@@ -1,0 +1,11 @@
+version: "3.8"
+
+services:
+  note_rag:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./app:/app
+    env_file:
+      - ./app/.env
