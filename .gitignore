@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.sqlite3
+
+# Env
+.env
+
+# Docker
+*.log
+*.pid
+*.tar
+*.sock
+
+# Jupyter
+.ipynb_checkpoints/
+
+# VSCode
+.vscode/
+
+# macOS
+.DS_Store
+
+# Streamlit (キャッシュ)
+.streamlit/
+
+# OSやエディタの一時ファイル
+*.swp
+*~
