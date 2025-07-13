@@ -1,11 +1,17 @@
-version: "3.8"
-
 services:
   note_rag:
     build: .
-    ports:
-      - "8501:8501"
     volumes:
       - ./app:/app
-    env_file:
-      - ./app/.env
+    depends_on:
+      - chrome
+    environment:
+      - NOTE_USER_ID=hinataptyan
+
+  chrome:
+    image: seleniarm/standalone-chromium:latest
+    shm_size: 2g
+    ports:
+      - "4444:4444"
+    environment:
+      - SE_NODE_MAX_SESSIONS=1
