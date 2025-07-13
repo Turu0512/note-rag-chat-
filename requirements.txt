@@ -1,9 +1,10 @@
-requests
+selenium
 beautifulsoup4
+requests
 html2text
 tiktoken
-openai
 langchain
 chromadb
+openai
 streamlit
 python-dotenv
