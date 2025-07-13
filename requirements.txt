@@ -8,3 +8,4 @@ chromadb
 openai
 streamlit
 python-dotenv
+sentence-transformers
