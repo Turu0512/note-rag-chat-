@@ -1,55 +1,45 @@
-import os
 import requests
-from bs4 import BeautifulSoup
-import html2text
+import os
 
-USER_ID = os.environ.get("NOTE_USER_ID", "hinataptyan")  # ← あなたのNoteユーザーIDを指定
-BASE_URL = f"https://note.com/{USER_ID}"
-
+USER_ID = os.environ.get("NOTE_USER_ID", "hinataptyan")
+BASE_LIST_URL = f"https://note.com/api/v2/creators/{USER_ID}/contents?kind=note&page={{page}}"
+DETAIL_URL = "https://note.com/api/v3/notes/{key}"
 SAVE_DIR = "articles"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-def fetch_article_urls():
-    print(f"[INFO] Fetching article list for: {BASE_URL}")
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
-    res = requests.get(BASE_URL, headers=headers)
-    soup = BeautifulSoup(res.text, "html.parser")
+headers = {"User-Agent": "Mozilla/5.0"}
 
-    links = []
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if href.startswith(f"/{USER_ID}/n/"):
-            full_url = f"https://note.com{href}"
-            if full_url not in links:
-                links.append(full_url)
+page = 1
+total = 0
 
-    print(f"[INFO] Found {len(links)} articles.")
-    return links
+while True:
+    url = BASE_LIST_URL.format(page=page)
+    print(f"[INFO] Fetching list: {url}")
+    resp = requests.get(url, headers=headers)
+    resp.raise_for_status()
+    data = resp.json()["data"]
+    contents = data["contents"]
+    if not contents:
+        print("[INFO] No more articles found.")
+        break
+    for c in contents:
+        title = c.get("name", "no_title")
+        note_key = c.get("key")
+        slug = c.get("slug") or str(c.get("id"))
+        # 詳細APIで全文取得
+        detail_resp = requests.get(DETAIL_URL.format(key=note_key), headers=headers)
+        detail_resp.raise_for_status()
+        detail = detail_resp.json().get("data", {})
+        full_body = detail.get("body", "")
+        safe_slug = "".join(x if x.isalnum() else "_" for x in slug)
+        filename = f"{SAVE_DIR}/{page:02d}_{safe_slug}.txt"
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(f"タイトル: {title}\n\n")
+            f.write(full_body)
+        print(f"[OK] Saved: {filename}")
+        total += 1
+    if data.get("isLastPage"):
+        break
+    page += 1
 
-def fetch_article_text(url):
-    print(f"[INFO] Fetching article: {url}")
-    res = requests.get(url)
-    soup = BeautifulSoup(res.text, "html.parser")
-    article_div = soup.find("div", {"id": "js-content"})
-    if not article_div:
-        return None
-    html = str(article_div)
-    return html2text.html2text(html)
-
-def main():
-    print("[RUNNING] fetch_notes.py started")
-    urls = fetch_article_urls()
-    for i, url in enumerate(urls):
-        text = fetch_article_text(url)
-        if text:
-            filename = f"{SAVE_DIR}/article_{i+1}.txt"
-            with open(filename, "w", encoding="utf-8") as f:
-                f.write(text)
-            print(f"[OK] Saved to {filename}")
-        else:
-            print(f"[WARN] Skipped (no content): {url}")
-
-if __name__ == "__main__":
-    main()
+print(f"[DONE] {total} articles saved.")
