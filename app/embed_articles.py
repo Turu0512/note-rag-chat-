@@ -3,9 +3,8 @@ import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 
-client = chromadb.Client(Settings(persist_directory="./chroma_db"))
+client = chromadb.PersistentClient(path="chroma_db")
 collection = client.get_or_create_collection("note_articles")
-
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
 for filepath in glob.glob("articles/*.txt"):
@@ -20,5 +19,4 @@ for filepath in glob.glob("articles/*.txt"):
     )
     print(f"登録: {filepath}")
 
-client.persist()
 print("全記事をChromaDBへ登録完了！")
