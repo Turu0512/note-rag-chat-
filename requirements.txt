@@ -9,3 +9,9 @@ openai
 streamlit
 python-dotenv
 sentence-transformers
+fastapi
+uvicorn[standard]
+openai
+chromadb
+sentence-transformers
+pydantic
