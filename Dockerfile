@@ -2,19 +2,27 @@ FROM python:3.10-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# 必要なパッケージをインストール
+# — 必要なパッケージインストール —
 RUN apt-get update && apt-get install -y \
     curl unzip wget gnupg \
     chromium-driver chromium \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+  && apt-get clean \
+  && rm -rf /var/lib/apt/lists/*
 
-# Python依存ライブラリのインストール
-COPY requirements.txt ./
+# — 作業ディレクトリを /app に —
+WORKDIR /app
+
+# — Python依存ライブラリ —
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-WORKDIR /app
+# — エントリポイントスクリプトを /
+COPY app/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# — アプリケーションコード一式を /app に —
 COPY . .
 
-# Streamlit起動がデフォルト
-CMD ["streamlit", "run", "main.py"]
+# — ENTRYPOINT とデフォルトCMD を設定 —
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
