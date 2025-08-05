@@ -1,9 +1,13 @@
 import streamlit as st
 import chromadb
+from chromadb import Client
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 
-client = chromadb.Client(Settings(persist_directory="./chroma_db"))
+client = Client(Settings(
+    chroma_db_impl="duckdb+parquet",
+    persist_directory="./chroma_db"
+))
 collection = client.get_collection("note_articles")
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
