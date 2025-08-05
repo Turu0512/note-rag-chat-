@@ -1,12 +1,27 @@
+version: "3.8"
 services:
   note_rag:
     build: .
+    env_file:
+      - ./.env
+    working_dir: /app
     volumes:
-      - ./app:/app
+      - ./app:/app # アプリコード
+      - ./chroma_db:/app/chroma_db # persist 用ディレクトリ
+      - ./app/articles:/app/articles # 記事データ
     depends_on:
       - chrome
-    environment:
-      - NOTE_USER_ID=hinataptyan
+    ports:
+      - "8000:8000"
+    entrypoint:
+      - "/entrypoint.sh"
+    command:
+      - "uvicorn"
+      - "main:app"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8000"
 
   chrome:
     image: seleniarm/standalone-chromium:latest
@@ -15,3 +30,6 @@ services:
       - "4444:4444"
     environment:
       - SE_NODE_MAX_SESSIONS=1
+
+volumes:
+  chroma_db: {}
