@@ -1,15 +1,15 @@
 #!/bin/sh
 set -e
+
 cd /app
 
-# ./chroma_db が空または存在しなければ embed_articles.py を実行
-if [ ! -d "chroma_db" ] || [ -z "$(ls -A chroma_db)" ]; then
-  echo "[entrypoint] ChromaDB にデータがないため、埋め込み処理を実行します…"
-  python embed_articles.py
-  echo "[entrypoint] 埋め込み処理 完了."
+echo "[entrypoint] embed_articles.py を実行してコレクションを用意します（既存ならスキップされます）..."
+if [ -f ./embed_articles.py ]; then
+  # 埋め込みスクリプトは idempotent（既存ならスキップ）にしてある想定
+  python embed_articles.py || echo "[entrypoint] embed_articles.py 実行でエラー（続行します）"
 else
-  echo "[entrypoint] 既存の ChromaDB データがあるのでスキップします."
+  echo "[entrypoint] embed_articles.py が見つかりません。スキップします。"
 fi
 
-# CMD 以下を実行（uvicorn main:app など）
+echo "[entrypoint] アプリを起動します..."
 exec "$@"
