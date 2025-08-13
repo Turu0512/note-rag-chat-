@@ -4,11 +4,10 @@ services:
     build: .
     env_file:
       - ./.env
-    working_dir: /app
+    # ← ここだけで app 以下を丸ごとマウント
     volumes:
-      - ./app:/app # アプリコード
-      - ./chroma_db:/app/chroma_db # persist 用ディレクトリ
-      - ./app/articles:/app/articles # 記事データ
+      - ./app:/app
+    working_dir: /app
     depends_on:
       - chrome
     ports:
@@ -30,6 +29,3 @@ services:
       - "4444:4444"
     environment:
       - SE_NODE_MAX_SESSIONS=1
-
-volumes:
-  chroma_db: {}
