@@ -1,62 +1,81 @@
 import os
 import glob
+import logging
+from typing import List
 import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+
+CHROMA_DIR = os.environ.get("CHROMA_DIR", "./chroma_db")
+EMBED_MODEL = os.environ.get("EMBED_MODEL", "all-MiniLM-L6-v2")
+ARTICLES_DIR = os.environ.get("ARTICLES_DIR", "./articles")
+COLLECTION_NAME = os.environ.get("COLLECTION_NAME", "note_articles")
 
 def main():
-    # ChromaDB クライアントを初期化（persist_directory は Docker コンテナ内パス）
+    # 永続化を明示的に ON
     client = chromadb.Client(Settings(
-        persist_directory="./chroma_db"
+        is_persistent=True,
+        persist_directory=CHROMA_DIR,
+        anonymized_telemetry=False,
     ))
+    collection = client.get_or_create_collection(COLLECTION_NAME)
 
-    # コレクションを取得 or 作成
-    existing = [c.name for c in client.list_collections()]
-    if "note_articles" in existing:
-        collection = client.get_collection("note_articles")
-    else:
-        collection = client.create_collection("note_articles")
-
-    # 埋め込み済み件数を取得（count() は int または dict を返す可能性がある）
-    raw_count = collection.count()
-    count = raw_count.get("count") if isinstance(raw_count, dict) else raw_count
-    if count and count > 0:
-        print(f"[embed] note_articles コレクションに既に {count} 件の埋め込みがあります。処理をスキップします。")
+    # 既存件数を確認
+    try:
+        current = collection.count()
+    except Exception:
+        current = 0
+    if current > 0:
+        logger.info(f"[embed] 既に {current} 件あるためスキップします。")
         return
 
-    # 埋め込みモデルをロード
-    model = SentenceTransformer("all-MiniLM-L6-v2")
-    articles_dir = "./articles"
+    # 埋め込みモデル
+    logger.info(f"[embed] Use SentenceTransformer: {EMBED_MODEL}")
+    model = SentenceTransformer(EMBED_MODEL)
 
-    ids = []
-    embeddings = []
-    documents = []
+    ids: List[str] = []
     metadatas = []
+    documents = []
+    embeddings = []
 
-    # テキストファイル毎に埋め込みを作成
-    for path in glob.glob(os.path.join(articles_dir, "*.txt")):
-        fname = os.path.basename(path)
+    paths = sorted(glob.glob(os.path.join(ARTICLES_DIR, "*.txt")))
+    if not paths:
+        logger.warning(f"[embed] 文章ファイルが見つかりません: {ARTICLES_DIR}/*.txt")
+        return
+
+    for path in paths:
         with open(path, encoding="utf-8") as f:
-            text = f.read().strip()
+            text = (f.read() or "").strip()
         if not text:
             continue
-        emb = model.encode([text])[0]
+        vec = model.encode([text])[0].tolist()
+        fname = os.path.basename(path)
+
         ids.append(fname)
-        embeddings.append(emb.tolist())
         documents.append(text)
+        embeddings.append(vec)
         metadatas.append({"filename": fname})
 
-    # バルクでコレクションに追加
+    if not ids:
+        logger.warning("[embed] 追加対象がありませんでした。")
+        return
+
     collection.add(
         ids=ids,
+        documents=documents,
         embeddings=embeddings,
         metadatas=metadatas,
-        documents=documents
     )
 
-    print(f"[embed] 埋め込み処理 完了: {len(ids)} 件。")
-
+    # 反映確認
+    try:
+        total = collection.count()
+    except Exception:
+        total = -1
+    logger.info(f"[embed] 埋め込み処理 完了: {total} 件。")
 
 if __name__ == "__main__":
     main()
