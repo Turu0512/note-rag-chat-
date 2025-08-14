@@ -6,50 +6,53 @@ from fastapi import FastAPI, HTTPException, Request
 import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
-import openai
+from openai import OpenAI  # ★ 新SDK
 
-# ——— ログ設定 ———
+# ── ログ ─────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-# ——— 環境変数 ———
+# ── 環境変数 ─────────────────────────────────────────────────────
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-3.5-turbo")
 EMBED_MODEL  = os.environ.get("EMBED_MODEL", "all-MiniLM-L6-v2")
 CHROMA_DIR   = os.environ.get("CHROMA_DIR", "./chroma_db")
+COLLECTION_NAME = os.environ.get("COLLECTION_NAME", "note_articles")
 
-# ——— ChromaDB クライアント ———
-client = chromadb.Client(Settings(persist_directory=CHROMA_DIR))
-
-# コレクション取得（無ければ作成だけしておく）
-names = [c.name for c in client.list_collections()]
-if "note_articles" in names:
-    collection = client.get_collection("note_articles")
+# ── Chroma（永続化ONで初期化） ────────────────────────────────────
+client_chroma = chromadb.Client(Settings(
+    is_persistent=True,
+    persist_directory=CHROMA_DIR,
+    anonymized_telemetry=False,
+))
+names = [c.name for c in client_chroma.list_collections()]
+if COLLECTION_NAME in names:
+    collection = client_chroma.get_collection(COLLECTION_NAME)
 else:
-    logger.warning("note_articles コレクションが見つからなかったため空のコレクションを作成します。先に embed_articles.py を実行してください。")
-    collection = client.create_collection("note_articles")
+    logger.warning(f"{COLLECTION_NAME} コレクションが見つからなかったため空のコレクションを作成します。先に embed_articles.py を実行してください。")
+    collection = client_chroma.create_collection(COLLECTION_NAME)
 
 try:
     total = collection.count()
 except Exception as e:
     logger.error(f"collection.count() でエラー: {e}")
     total = -1
-logger.info(f"ChromaDB ready. collection=note_articles, count={total}, dir={os.path.abspath(CHROMA_DIR)}")
+logger.info(f"ChromaDB ready. collection={COLLECTION_NAME}, count={total}, dir={os.path.abspath(CHROMA_DIR)}")
 
-# ——— 埋め込みモデル（クエリ用）———
+# ── 埋め込みモデル（検索用） ───────────────────────────────────────
 logger.info(f"Use SentenceTransformer: {EMBED_MODEL}")
 embedder = SentenceTransformer(EMBED_MODEL)
 
-# ——— FastAPI アプリ ———
-app = FastAPI()
+# ── OpenAI クライアント（新SDK） ─────────────────────────────────
+oai = OpenAI()  # OPENAI_API_KEY は環境変数で
 logger.info(f"使用モデル: {OPENAI_MODEL}")
 
+# ── FastAPI ─────────────────────────────────────────────────────
+app = FastAPI()
+
 def _extract_keywords_jp(q: str, max_k: int = 4) -> List[str]:
-    """超シンプルな日本語用キーワード抽出（形態素なし）。
-    記号で分割 → 2文字以上のみ → 重複除去。"""
     parts = re.split(r"[、。！？\s/・,.;:()\[\]{}「」『』\"'…]+", q)
     parts = [p for p in parts if len(p) >= 2]
-    # よく出るストップワードは軽く除外
-    stop = {"について", "教えて", "ブログ", "記事", "ください", "ください。", "こと", "もの"}
+    stop = {"について", "教えて", "ブログ", "記事", "ください", "こと", "もの"}
     kws = []
     for p in parts:
         if p in stop:
@@ -74,24 +77,23 @@ async def query(request: Request):
         raise HTTPException(status_code=400, detail="不正なリクエストです。")
 
     # 1) ベクトル検索
+    docs = []; metas = []; ids = []
     try:
         qvec = embedder.encode([question])[0].tolist()
         res = collection.query(
             query_embeddings=[qvec],
             n_results=5,
-            include=["documents", "metadatas", "distances"],  # ※ ids は include に指定不可
+            include=["documents", "metadatas", "distances"],
         )
         docs = res.get("documents", [[]])[0] or []
         metas = res.get("metadatas", [[]])[0] or []
-        dists = res.get("distances", [[]])[0] or []
-        # ids は include しなくても返ってくる実装もあるが、無ければ空にする
         ids = (res.get("ids") or [[]])[0] if isinstance(res.get("ids"), list) else []
+        dists = res.get("distances", [[]])[0] or []
         logger.info(f"[vector] hits={len(docs)} dists={dists[:3]}")
     except Exception as e:
         logger.error(f"Chroma vector query error: {e}")
-        docs, metas, ids = [], [], []
 
-    # 2) ヒット0なら where_document で部分一致
+    # 2) 0件なら contains 部分一致
     if not docs:
         try:
             kws = _extract_keywords_jp(question)
@@ -105,14 +107,12 @@ async def query(request: Request):
                     found_ids.extend(r.get("ids", [""] * len(r["documents"])))
                 if len(found_docs) >= 5:
                     break
-            docs = found_docs[:5]
-            metas = found_metas[:5]
-            ids   = found_ids[:5]
+            docs = found_docs[:5]; metas = found_metas[:5]; ids = found_ids[:5]
             logger.info(f"[contains] hits={len(docs)}")
         except Exception as e:
             logger.error(f"Chroma contains-get error: {e}")
 
-    # 3) それでも0なら、とりあえず直近5件
+    # 3) それでも0なら直近5件を返す
     if not docs:
         try:
             r = collection.get(limit=5)
@@ -127,16 +127,14 @@ async def query(request: Request):
         logger.info("関連記事が見つかりませんでした。")
         raise HTTPException(status_code=404, detail="関連記事が見つかりませんでした")
 
-    # まとめてコンテキスト化
     context = "\n\n".join(docs if isinstance(docs, list) else [docs])
-    logger.info(f"Retrieved {len(docs)} documents from ChromaDB.")
 
-    # OpenAI で回答生成
+    # ── OpenAI Chat（新SDK） ───────────────────────────────────────
     try:
-        resp = openai.ChatCompletion.create(
+        resp = oai.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
-                {"role": "system",  "content": "記事の内容をもとに、ユーザーの質問に日本語で簡潔に回答してください。必要なら記事のファイル名も括弧で添えてください。"},
+                {"role": "system",  "content": "記事の内容をもとに日本語で簡潔に回答してください。必要なら記事のファイル名も括弧で添えてください。"},
                 {"role": "user",    "content": f"質問: {question}\n\n関連記事:\n{context}"},
             ],
             temperature=0.3,
