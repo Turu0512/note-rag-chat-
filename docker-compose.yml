@@ -4,7 +4,6 @@ services:
     build: .
     env_file:
       - ./.env
-    # ← ここだけで app 以下を丸ごとマウント
     volumes:
       - ./app:/app
     working_dir: /app
@@ -12,6 +11,8 @@ services:
       - chrome
     ports:
       - "8000:8000"
+    environment:
+      FORCE_REINDEX: ${FORCE_REINDEX:-}
     entrypoint:
       - "/entrypoint.sh"
     command:
