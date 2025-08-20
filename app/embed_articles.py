@@ -1,81 +1,56 @@
 import os
 import glob
-import logging
 from typing import List
-import chromadb
-from chromadb.config import Settings
+
+from chromadb import PersistentClient
 from sentence_transformers import SentenceTransformer
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger(__name__)
 
-CHROMA_DIR = os.environ.get("CHROMA_DIR", "./chroma_db")
-EMBED_MODEL = os.environ.get("EMBED_MODEL", "all-MiniLM-L6-v2")
+PERSIST_DIR = os.environ.get("CHROMA_PERSIST_DIR", "./chroma_db")
+EMBED_MODEL = os.environ.get(
+    "EMBED_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+)
+COLLECTION  = os.environ.get("CHROMA_COLLECTION", "note_articles")
 ARTICLES_DIR = os.environ.get("ARTICLES_DIR", "./articles")
-COLLECTION_NAME = os.environ.get("COLLECTION_NAME", "note_articles")
+FORCE_REINDEX = os.environ.get("FORCE_REINDEX", "0") == "1"
 
-def main():
-    # 永続化を明示的に ON
-    client = chromadb.Client(Settings(
-        is_persistent=True,
-        persist_directory=CHROMA_DIR,
-        anonymized_telemetry=False,
-    ))
-    collection = client.get_or_create_collection(COLLECTION_NAME)
 
-    # 既存件数を確認
-    try:
-        current = collection.count()
-    except Exception:
-        current = 0
-    if current > 0:
-        logger.info(f"[embed] 既に {current} 件あるためスキップします。")
+def main() -> None:
+    client = PersistentClient(path=PERSIST_DIR)  # ← 新方式に統一
+    col = client.get_or_create_collection(COLLECTION, metadata={"embedding_model": EMBED_MODEL})
+
+    existing = col.count()
+    if existing > 0 and not FORCE_REINDEX:
+        print(f"[embed] 既存インデックスを使用: {existing} 件（model={EMBED_MODEL}）")
         return
-
-    # 埋め込みモデル
-    logger.info(f"[embed] Use SentenceTransformer: {EMBED_MODEL}")
-    model = SentenceTransformer(EMBED_MODEL)
-
-    ids: List[str] = []
-    metadatas = []
-    documents = []
-    embeddings = []
+    if existing > 0 and FORCE_REINDEX:
+        col.delete(where={})
+        print(f"[embed] 既存 {existing} 件を削除して再作成します…")
 
     paths = sorted(glob.glob(os.path.join(ARTICLES_DIR, "*.txt")))
     if not paths:
-        logger.warning(f"[embed] 文章ファイルが見つかりません: {ARTICLES_DIR}/*.txt")
+        print(f"[embed] 入力記事がありません: {ARTICLES_DIR}")
         return
 
-    for path in paths:
-        with open(path, encoding="utf-8") as f:
-            text = (f.read() or "").strip()
-        if not text:
+    model = SentenceTransformer(EMBED_MODEL)
+    texts: List[str] = []
+    ids:   List[str] = []
+    metas: List[dict] = []
+
+    for p in paths:
+        with open(p, encoding="utf-8") as f:
+            t = f.read().strip()
+        if not t:
             continue
-        vec = model.encode([text])[0].tolist()
-        fname = os.path.basename(path)
-
+        fname = os.path.basename(p)
+        texts.append(t)
         ids.append(fname)
-        documents.append(text)
-        embeddings.append(vec)
-        metadatas.append({"filename": fname})
+        metas.append({"filename": fname})
 
-    if not ids:
-        logger.warning("[embed] 追加対象がありませんでした。")
-        return
+    embs = model.encode(texts, batch_size=32, show_progress_bar=False).tolist()
+    col.add(ids=ids, documents=texts, metadatas=metas, embeddings=embs)
+    print(f"[embed] 埋め込み処理 完了: {len(ids)} 件。")
 
-    collection.add(
-        ids=ids,
-        documents=documents,
-        embeddings=embeddings,
-        metadatas=metadatas,
-    )
-
-    # 反映確認
-    try:
-        total = collection.count()
-    except Exception:
-        total = -1
-    logger.info(f"[embed] 埋め込み処理 完了: {total} 件。")
 
 if __name__ == "__main__":
     main()
