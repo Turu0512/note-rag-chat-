@@ -30,3 +30,27 @@ services:
       - "4444:4444"
     environment:
       - SE_NODE_MAX_SESSIONS=1
+
+  ui:
+    build: .
+    env_file:
+      - ./.env
+    volumes:
+      - ./app:/app
+    working_dir: /app
+    depends_on:
+      - note_rag
+    ports:
+      - "8501:8501"
+    environment:
+      NOTE_RAG_API_URL: http://note_rag:8000/query
+    entrypoint:
+      - "/entrypoint.sh"
+    command:
+      - "streamlit"
+      - "run"
+      - "streamlit_app.py"
+      - "--server.port"
+      - "8501"
+      - "--server.address"
+      - "0.0.0.0"
