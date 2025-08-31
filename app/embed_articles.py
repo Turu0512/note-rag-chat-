@@ -16,7 +16,7 @@ FORCE_REINDEX = os.environ.get("FORCE_REINDEX", "0") == "1"
 
 
 def main() -> None:
-    client = PersistentClient(path=PERSIST_DIR)  # ← 新方式に統一
+    client = PersistentClient(path=PERSIST_DIR)
     col = client.get_or_create_collection(COLLECTION, metadata={"embedding_model": EMBED_MODEL})
 
     existing = col.count()
