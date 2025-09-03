@@ -1,5 +1,3 @@
-# main.py
-
 import os
 import json
 import logging
@@ -7,6 +5,7 @@ from typing import List, Tuple
 
 from fastapi import FastAPI, HTTPException, Request
 from chromadb import PersistentClient
+from chromadb.errors import NotFoundError
 from sentence_transformers import SentenceTransformer
 from openai import OpenAI
 
@@ -25,16 +24,19 @@ COLLECTION   = os.environ.get("CHROMA_COLLECTION", "note_articles")
 
 # ── Chroma（PersistentClient で統一） ────────────────────────────────────
 client = PersistentClient(path=PERSIST_DIR)
+
+def _get_collection():
+    """常に最新のコレクションハンドルを取得（embed後の再作成にも追従）"""
+    return client.get_or_create_collection(COLLECTION)
+
+# 起動ログ
 try:
-    collection = client.get_collection(COLLECTION)
-except Exception:
-    log.warning(f"{COLLECTION} コレクションが見つからず作成します（embed_articles.py が先に走る想定）")
-    collection = client.get_or_create_collection(COLLECTION)
+    _cnt = _get_collection().count()
+    log.info(f"ChromaDB ready. collection={COLLECTION}, count={_cnt}, dir={os.path.abspath(PERSIST_DIR)}")
+except Exception as e:
+    log.warning(f"Chroma 初期化時に count 取得で例外: {e}")
 
-count = collection.count()
-log.info(f"ChromaDB ready. collection={COLLECTION}, count={count}, dir={os.path.abspath(PERSIST_DIR)}")
-
-# ── SentenceTransformer（埋め込みは記事作成時と同じモデルを使用） ───────
+# ── SentenceTransformer（検索時も embed と同一モデル） ──────────────────
 log.info(f"Use SentenceTransformer: {EMBED_MODEL}")
 embedder = SentenceTransformer(EMBED_MODEL)
 
@@ -49,12 +51,23 @@ app = FastAPI()
 def vector_search(q: str, k: int = 5) -> Tuple[List[str], List[str], List[dict], List[float]]:
     """クエリ文字列 q に対してベクトル検索を行い、候補を返す。"""
     q_emb = embedder.encode([q])[0].tolist()
-    res = collection.query(
-        query_embeddings=[q_emb],
-        n_results=k,
-        include=["documents", "metadatas", "distances"],  # ids は include しなくても返ってくる
-    )
-    docs = res.get("documents", [[]])[0] or []
+    coll = _get_collection()
+    try:
+        res = coll.query(
+            query_embeddings=[q_emb],
+            n_results=k,
+            include=["ids", "documents", "metadatas", "distances"],
+        )
+    except NotFoundError:
+        # embed 側でコレクションが再作成された直後など
+        coll = _get_collection()
+        res = coll.query(
+            query_embeddings=[q_emb],
+            n_results=k,
+            include=["ids", "documents", "metadatas", "distances"],
+        )
+
+    docs  = res.get("documents", [[]])[0] or []
     metas = res.get("metadatas", [[]])[0] or []
     dists = res.get("distances", [[]])[0] or []
     ids   = (res.get("ids", [[]])[0] or [])
@@ -64,7 +77,8 @@ def vector_search(q: str, k: int = 5) -> Tuple[List[str], List[str], List[dict],
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "chroma_count": collection.count(), "embed_model": EMBED_MODEL}
+    coll = _get_collection()
+    return {"status": "ok", "chroma_count": coll.count(), "embed_model": EMBED_MODEL}
 
 
 @app.post("/query")
@@ -149,11 +163,10 @@ async def query(request: Request):
                 },
             ],
         )
-        # response_format=json_schema の場合、content は厳密JSON文字列で返ってくる想定
+        # response_format=json_schema の場合、content は厳密JSON文字列で返ってくる
         data = json.loads(resp.choices[0].message.content)
     except Exception as e:
         log.error(f"OpenAI API エラー: {e}")
         raise HTTPException(status_code=500, detail=f"OpenAI API エラー: {e}")
 
-    # そのまま JSON を返す
     return data
