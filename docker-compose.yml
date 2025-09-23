@@ -9,6 +9,7 @@ services:
     working_dir: /app
     depends_on:
       - chrome
+      - ollama # ← 追加（gpt-oss を使う場合）
     ports:
       - "8000:8000"
     environment:
@@ -54,3 +55,12 @@ services:
       - "8501"
       - "--server.address"
       - "0.0.0.0"
+
+  # ← 追加: gpt-oss を動かすローカル推論（Ollama）
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./ollama:/root/.ollama
+    restart: unless-stopped
