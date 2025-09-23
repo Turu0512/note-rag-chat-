@@ -5,6 +5,7 @@ import json
 import logging
 from typing import List, Tuple, Dict, Any
 
+import requests  # ← 追加（Ollama用）
 from fastapi import FastAPI, HTTPException, Request
 from chromadb import PersistentClient
 from chromadb.errors import NotFoundError
@@ -25,8 +26,13 @@ EMBED_MODEL  = os.environ.get("EMBED_MODEL", "sentence-transformers/paraphrase-m
 COLLECTION   = os.environ.get("CHROMA_COLLECTION", "note_articles")
 
 # コンテキスト制御
-MAX_DOCS      = int(os.environ.get("MAX_DOCS", "5"))
+MAX_DOCS      = int(os.environ.get("MAX_DOCS", "10"))
 MAX_DOC_CHARS = int(os.environ.get("MAX_DOC_CHARS", "1200"))
+
+# 追加: LLMバックエンド切替（openai / ollama）
+LLM_BACKEND  = os.environ.get("LLM_BACKEND", "openai")
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://localhost:11434")
+LLM_MODEL    = os.environ.get("LLM_MODEL", "gpt-oss:20b")
 
 # ── Chroma ────────────────────────────────────────────────────────────────
 client = PersistentClient(path=PERSIST_DIR)
@@ -47,7 +53,8 @@ embedder = SentenceTransformer(EMBED_MODEL)
 
 # ── OpenAI ────────────────────────────────────────────────────────────────
 oai = OpenAI()
-log.info(f"使用モデル: {OPENAI_MODEL}")
+log.info(f"使用モデル(OPENAI): {OPENAI_MODEL}")
+log.info(f"LLM_BACKEND={LLM_BACKEND}, LLM_MODEL={LLM_MODEL}, LLM_BASE_URL={LLM_BASE_URL}")
 
 # ── FastAPI ───────────────────────────────────────────────────────────────
 app = FastAPI()
@@ -100,6 +107,57 @@ def vector_search(q: str, k: int = 5) -> Tuple[List[str], List[str], List[dict],
     ids   = (res.get("ids")        or [[]])[0] or []  # ids はレスポンスに含まれる
     log.info(f"[vector] hits={len(docs)} dists={dists[:3]}")
     return ids, docs, metas, dists
+
+
+def gen_json_answer(system_prompt: str, user_prompt: str, schema: dict) -> dict:
+    """
+    必ずJSONを返す共通ラッパ。
+    - OpenAI: response_format=json_schema を使用
+    - Ollama: /api/chat format=json + 強めの指示で JSON 強制
+    """
+    if LLM_BACKEND == "openai":
+        resp = oai.chat.completions.create(
+            model=OPENAI_MODEL,
+            temperature=0.3,
+            max_tokens=900,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {"name": "note_chatty_answer", "schema": schema, "strict": True}
+            },
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": user_prompt},
+            ],
+        )
+        return json.loads(resp.choices[0].message.content)
+
+    # ---- Ollama (gpt-oss) ----
+    payload = {
+        "model": LLM_MODEL,
+        "messages": [
+            {"role": "system", "content":
+                "以下の指示に厳密に従い、**JSONのみ**を出力してください。"
+                "説明文や前置き、コードブロック記法は書かないでください。"
+                "必ず次のJSONスキーマに一致させてください。\n"
+                + json.dumps(schema, ensure_ascii=False)
+            },
+            {"role": "user", "content": user_prompt}
+        ],
+        "format": "json",
+        "options": {"temperature": 0.3}
+    }
+    r = requests.post(f"{LLM_BASE_URL}/api/chat", json=payload, timeout=120)
+    r.raise_for_status()
+    content = r.json()["message"]["content"]
+    try:
+        return json.loads(content)
+    except Exception:
+        # 万一JSONが壊れた場合の簡易救済
+        import re as _re
+        m = _re.search(r"\{.*\}", content, _re.S)
+        if not m:
+            raise
+        return json.loads(m.group(0))
 
 
 @app.get("/health")
@@ -160,7 +218,6 @@ async def query(request: Request):
                 "description": "ユーザーが次に掘り下げられる観点（例：場所の詳細、費用、持ち物、季節の注意）。空配列でも可。"
             }
         },
-        # ← strict:true では required に properties の全キーを含める必要がある
         "required": ["answer", "suggestions"],
         "additionalProperties": False
     }
@@ -185,27 +242,10 @@ async def query(request: Request):
     )
 
     try:
-        resp = oai.chat.completions.create(
-            model=OPENAI_MODEL,
-            temperature=0.3,
-            max_tokens=900,
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "note_chatty_answer",
-                    "schema": schema,
-                    "strict": True
-                }
-            },
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": user_prompt},
-            ],
-        )
-        data = json.loads(resp.choices[0].message.content)
+        data = gen_json_answer(system_prompt, user_prompt, schema)
     except Exception as e:
-        log.error(f"OpenAI API エラー: {e}")
-        raise HTTPException(status_code=500, detail=f"OpenAI API エラー: {e}")
+        log.error(f"LLM エラー: {e}")
+        raise HTTPException(status_code=500, detail=f"LLM エラー: {e}")
 
     sources = _collect_sources(metas, dists, ids)
 
